@@ -1,4 +1,4 @@
-# Neuro Mindmap (Mouse)
+# MapTheMind (Mouse)
 
 The Obsidian plugin for neuroscientists working on the mouse brain.
 Neuro Mindmap turns your vault into a visual note-taking tool anchored
