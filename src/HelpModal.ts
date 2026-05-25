@@ -64,7 +64,7 @@ export class HelpModal extends Modal {
 		el.createEl("h3", { text: "Note types" });
 		const types = el.createEl("ul");
 		addType(types, "brain-region", "A brain structure (e.g. CA1). Anchored by Allen structure ID.");
-		addType(types, "cell-type",    "A specific cell type living in a region/layer (e.g. CA1 pyramidal). Can carry dendrite/axon targets and a NeuroMorpho morphology source.");
+		addType(types, "cell-type",    "A specific cell type living in a region/layer (e.g. CA1 pyramidal). Can carry dendrite/axon targets and a NeuroMorpho morphology source — or be created as a schematic glyph whose soma shape and dendrite layout you configure in the placement panel.");
 		addType(types, "viewpoint",    "A 2D schematic of one Allen slice — generated when you pick a slice in the region view.");
 		addType(types, "topic",        "An atomic concept note (mechanism, circuit, phenomenon). Scoped to one or more anatomical anchors so the viewpoint side panel surfaces it where it applies.");
 
@@ -93,6 +93,11 @@ export class HelpModal extends Modal {
 		const c = ex.createEl("li");
 		c.appendText("ca3-dendritic-integration.md");
 		c.createEl("em", { text: " — the cellular mechanism (scope: CA3); related: mechanism_of → pattern-separation" });
+
+		el.createEl("h3", { text: "Search syntax" });
+		el.createEl("p", {
+			text: "The search bar at the bottom runs a case-insensitive substring search across title, summary, themes, and body of every note in scope. Multiple whitespace-separated tokens are ANDed: 'mossy fiber' returns notes containing both 'mossy' and 'fiber' anywhere. To AND multi-word phrases, separate them with uppercase AND (whitespace-bounded): 'CA3 AND mossy fiber' returns notes that contain both the substring 'ca3' and the substring 'mossy fiber'. Lowercase 'and' is treated as a normal word.",
+		});
 
 		el.createEl("h3", { text: "Per-view help" });
 		el.createEl("p", {
@@ -126,7 +131,7 @@ export class HelpModal extends Modal {
 
 		el.createEl("h3", { text: "Search" });
 		el.createEl("p", {
-			text: "Type in the search bar at the bottom. Notes that live at deeper levels (inside viewpoints) appear as dots placed on the structure they belong to. Multiple dots from the same structure are split across hemispheres so they're visually distinguishable. Click a dot to open the note.",
+			text: "Type in the search bar at the bottom. Notes that live at deeper levels (inside viewpoints) appear as dots placed on the structure they belong to. Multiple dots from the same structure are split across hemispheres so they're visually distinguishable. Click a dot to open the note. Multiple terms are ANDed; use uppercase AND between phrases for multi-word matches (e.g. 'CA3 AND mossy fiber').",
 		});
 	}
 
@@ -196,6 +201,27 @@ export class HelpModal extends Modal {
 		canv.createEl("li", { text: "Scroll to zoom; drag to pan." });
 		canv.createEl("li", { text: "Cell-dense layers (e.g. pyramidal / granule) are rendered darker by default, matching the Allen atlas." });
 
+		el.createEl("h3", { text: "Adding cells" });
+		el.createEl("p", {
+			text: "Focus a subregion and click '+ Add cell'. Either pick a NeuroMorpho reconstruction or choose 'Create schematic cell (no morphology)' to draw a stylised glyph.",
+		});
+		const place = el.createEl("ul");
+		place.createEl("li", { text: "Drag the preview to move it; the side panel sliders set x/y, scale, and rotation." });
+		place.createEl("li", { text: "Keyboard while placing: ↑ ↓ ← → nudge · r / R rotate · + / − zoom · Esc cancels. These shortcuts pause while you're typing in the Name field, so letters like 'r' go into the cell name instead of rotating." });
+		const schem = place.createEl("li");
+		schem.appendText("Schematic cells gain five extra rows: ");
+		schem.createEl("strong", { text: "shape" });
+		schem.appendText(" (circle / triangle / oval — oriented by rotation), ");
+		schem.createEl("strong", { text: "primary dendrites" });
+		schem.appendText(" (count of cosmetic radiating dendrites), ");
+		schem.createEl("strong", { text: "spread °" });
+		schem.appendText(" (angular fan, 360 = full radial, 0 = stacked along rotation), ");
+		schem.createEl("strong", { text: "branch depth" });
+		schem.appendText(" (recursive forks per dendrite), and ");
+		schem.createEl("strong", { text: "arborization" });
+		schem.appendText(" (fork-angle width + taper).");
+		place.createEl("li", { text: "Shape settings live on the cell-type note's frontmatter, so the cell looks the same in every viewpoint. Per-viewpoint position/scale/rotation lives under 'placements'." });
+
 		el.createEl("h3", { text: "Side panel (right)" });
 		el.createEl("p", {
 			text: "Topics scoped to the current region/layer appear here, grouped by theme. Search filters them in place. '+ Add topic' pre-fills the scope with whatever you have focused.",
@@ -203,7 +229,7 @@ export class HelpModal extends Modal {
 
 		el.createEl("h3", { text: "Search" });
 		el.createEl("p", {
-			text: 'Hits at this viewpoint show in the side panel; hits one level deeper (cell-scoped notes inside this viewpoint) appear as in-canvas dots.',
+			text: "Hits at this viewpoint show in the side panel; hits one level deeper (cell-scoped notes inside this viewpoint) appear as in-canvas dots. Multiple terms are ANDed by default; use uppercase AND between phrases to keep multi-word terms together — e.g. 'CA3 AND mossy fiber'.",
 		});
 	}
 
@@ -232,7 +258,7 @@ export class HelpModal extends Modal {
 
 		el.createEl("h3", { text: "Search" });
 		el.createEl("p", {
-			text: "Direct hits at the cell level show in the side panel. There is no deeper level than this — searches scoped here only return cell-anchored notes.",
+			text: "Direct hits at the cell level show in the side panel. There is no deeper level than this — searches scoped here only return cell-anchored notes. Multiple terms are ANDed; use uppercase AND between phrases for multi-word matches.",
 		});
 	}
 }

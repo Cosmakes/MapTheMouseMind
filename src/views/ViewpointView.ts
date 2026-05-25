@@ -27,6 +27,7 @@ import type {
 	CellClass,
 	CellTypeFrontmatter,
 	Placement,
+	SomaShape,
 	ViewpointFrontmatter,
 	ViewpointLayer,
 } from "../types";
@@ -124,6 +125,12 @@ interface PlacementSession {
 	swcNodes?:   SwcNode[];                    // pre-fetched for snappy live render
 	dragging:    boolean;
 	dragLast?:   { x: number; y: number };     // viewBox coords
+	// Schematic shape parameters — unused when morphIdent is set.
+	somaShape:            SomaShape;
+	primaryDendrites:     number;
+	dendriteSpreadDeg:    number;
+	branchDepth:          number;
+	arborizationStrength: number;
 }
 
 export class ViewpointView {
@@ -594,12 +601,12 @@ export class ViewpointView {
 
 				const stored = fm.placements?.[vpKey];
 				let focus: Centroid;
-				let glyphPlacement: { cx: number; cy: number } | undefined;
+				let glyphPlacement: { cx: number; cy: number; scale: number; rotation: number } | undefined;
 				let morphPlacement: { cx: number; cy: number; scale: number; rotation: number } | undefined;
 
 				if (stored) {
 					focus = layerFocus;  // base for soma-radius/auto-fit; overridden via placement
-					glyphPlacement = { cx: stored.x, cy: stored.y };
+					glyphPlacement = { cx: stored.x, cy: stored.y, scale: stored.scale, rotation: stored.rotation };
 					morphPlacement = { cx: stored.x, cy: stored.y, scale: stored.scale, rotation: stored.rotation };
 				} else {
 					const offset = autoFiles.length > 1
@@ -1172,6 +1179,11 @@ export class ViewpointView {
 			cellName:    "",
 			cellClass:   "pyramidal",
 			dragging:    false,
+			somaShape:            "circle",
+			primaryDendrites:     0,
+			dendriteSpreadDeg:    360,
+			branchDepth:          0,
+			arborizationStrength: 0.5,
 		};
 
 		if (seed.mode === "create" && "candidate" in seed) {
@@ -1191,6 +1203,11 @@ export class ViewpointView {
 			session.morphIdent = fm?.morphology_source;
 			const stored = fm?.placements?.[this.viewpointKey()];
 			if (stored) session.placement = { ...stored };
+			session.somaShape            = fm?.soma_shape            ?? "circle";
+			session.primaryDendrites     = fm?.primary_dendrites     ?? 0;
+			session.dendriteSpreadDeg    = fm?.dendrite_spread_deg   ?? 360;
+			session.branchDepth          = fm?.branch_depth          ?? 0;
+			session.arborizationStrength = fm?.arborization_strength ?? 0.5;
 		}
 
 		this.placement = session;
@@ -1229,6 +1246,13 @@ export class ViewpointView {
 					existing[vpKey] = { ...s.placement };
 					fm.placements   = existing;
 					fm.cell_name    = s.cellName;
+					if (!fm.morphology_source) {
+						fm.soma_shape            = s.somaShape;
+						fm.primary_dendrites     = s.primaryDendrites;
+						fm.dendrite_spread_deg   = s.dendriteSpreadDeg;
+						fm.branch_depth          = s.branchDepth;
+						fm.arborization_strength = s.arborizationStrength;
+					}
 				});
 				new Notice("Placement saved.");
 			} else {
@@ -1248,7 +1272,15 @@ export class ViewpointView {
 					layer_id:    s.leafLayer.acronym,
 					placements:  { [vpKey]: { ...s.placement } },
 				};
-				if (s.morphIdent) fm.morphology_source = s.morphIdent;
+				if (s.morphIdent) {
+					fm.morphology_source = s.morphIdent;
+				} else {
+					fm.soma_shape            = s.somaShape;
+					fm.primary_dendrites     = s.primaryDendrites;
+					fm.dendrite_spread_deg   = s.dendriteSpreadDeg;
+					fm.branch_depth          = s.branchDepth;
+					fm.arborization_strength = s.arborizationStrength;
+				}
 
 				const body = `---\n${stringifyYaml(fm)}---\n\n# ${s.cellName}\n`;
 				await this.opts.app.vault.create(filePath, body);
@@ -1315,14 +1347,16 @@ export class ViewpointView {
 		};
 
 		const sliderRow = (
-			label: string,
-			get:   () => number,
-			set:   (v: number) => void,
-			min:   number,
-			max:   number,
-			step:  number,
+			label:    string,
+			get:      () => number,
+			set:      (v: number) => void,
+			min:      number,
+			max:      number,
+			step:     number,
+			tooltip?: string,
 		): void => {
 			const row = wrap.createDiv({ cls: "neuro-placement-row" });
+			if (tooltip) row.setAttr("title", tooltip);
 			row.createSpan({ text: label });
 			const slider = row.createEl("input", { type: "range" }) as HTMLInputElement;
 			slider.min   = min.toString();
@@ -1345,8 +1379,46 @@ export class ViewpointView {
 		sliderRow("scale",  () => s.placement.scale,    v => { s.placement.scale = v; },   0.1, 5,   0.05);
 		sliderRow("rotate", () => s.placement.rotation, v => { s.placement.rotation = v; }, -180, 180, 1);
 
+		// Shape controls — only meaningful for schematic cells. Morphology-backed
+		// cells take a different render path (drawMorphologyNodes), so hiding
+		// these rows for them keeps the UI honest.
+		if (!s.morphIdent) {
+			const shapeRow = wrap.createDiv({ cls: "neuro-placement-row" });
+			shapeRow.setAttr("title", "Soma silhouette. Triangle and oval rotate with the cell.");
+			shapeRow.createSpan({ text: "shape" });
+			const shapeSel = shapeRow.createEl("select") as HTMLSelectElement;
+			for (const v of ["circle","triangle","oval"] as SomaShape[]) {
+				const opt = shapeSel.createEl("option", { text: v, value: v });
+				if (v === s.somaShape) opt.selected = true;
+			}
+			shapeSel.addEventListener("change", () => {
+				s.somaShape = shapeSel.value as SomaShape;
+				this.renderPlacementPreview();
+			});
+			sliderRow("primary dendrites",
+				() => s.primaryDendrites,
+				v  => { s.primaryDendrites = Math.round(v); },
+				0, 12, 1,
+				"Number of cosmetic dendrites radiating from the soma (independent of dendrite_layers).");
+			sliderRow("spread °",
+				() => s.dendriteSpreadDeg,
+				v  => { s.dendriteSpreadDeg = v; },
+				0, 360, 5,
+				"Angular fan of the dendrites in degrees. 360 = full radial, 180 = half-fan, 0 = stacked along the rotation axis.");
+			sliderRow("branch depth",
+				() => s.branchDepth,
+				v  => { s.branchDepth = Math.round(v); },
+				0, 3, 1,
+				"How many times each dendrite forks (0 = straight).");
+			sliderRow("arborization",
+				() => s.arborizationStrength,
+				v  => { s.arborizationStrength = v; },
+				0, 1, 0.05,
+				"Fork angle and taper strength (0 = tight, 1 = wide and sharply tapered).");
+		}
+
 		const help = wrap.createDiv({ cls: "neuro-placement-help" });
-		help.setText("Drag the preview to move · use sliders for scale and rotation · arrows nudge · Esc cancels.");
+		help.setText("Drag to move · sliders set x/y/scale/rotation · arrows nudge · r / R rotate · + / − zoom · Esc cancels. Shape rows below configure schematic cells. See ? for details.");
 
 		const btnRow = wrap.createDiv({ cls: "neuro-placement-buttons" });
 		const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
@@ -1368,6 +1440,11 @@ export class ViewpointView {
 			cell_name:         s.cellName,
 			brain_region:      s.leafLayer.acronym,
 			morphology_source: s.morphIdent,
+			soma_shape:            s.somaShape,
+			primary_dendrites:     s.primaryDendrites,
+			dendrite_spread_deg:   s.dendriteSpreadDeg,
+			branch_depth:          s.branchDepth,
+			arborization_strength: s.arborizationStrength,
 		};
 
 		if (s.swcNodes && s.morphIdent) {
@@ -1381,8 +1458,14 @@ export class ViewpointView {
 				},
 			});
 		} else {
-			drawCellGlyph(group, focus, fm, this.centroids,
-				{ placement: { cx: s.placement.x, cy: s.placement.y } });
+			drawCellGlyph(group, focus, fm, this.centroids, {
+				placement: {
+					cx:       s.placement.x,
+					cy:       s.placement.y,
+					scale:    s.placement.scale,
+					rotation: s.placement.rotation,
+				},
+			});
 		}
 
 		this.refreshPlacementInputs();
@@ -1461,6 +1544,12 @@ export class ViewpointView {
 		const handler = (evt: KeyboardEvent): void => {
 			const s = this.placement;
 			if (!s) return;
+			const target = evt.target as HTMLElement | null;
+			if (target && (
+				target.tagName === "INPUT" ||
+				target.tagName === "TEXTAREA" ||
+				target.isContentEditable
+			)) return;
 			const nudge = this.viewBoxSide * 0.01;
 			switch (evt.key) {
 				case "ArrowLeft":  s.placement.x -= nudge; break;

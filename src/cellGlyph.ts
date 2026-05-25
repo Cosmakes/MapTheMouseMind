@@ -8,7 +8,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import type { DataAdapter } from "obsidian";
-import type { CellTypeFrontmatter, Compartment } from "./types";
+import type { CellTypeFrontmatter, Compartment, SomaShape } from "./types";
 import { fetchNeuronSwc, project2d, Point2D, SwcNode } from "./api/neuromorpho";
 
 export type { Compartment } from "./types";
@@ -28,9 +28,13 @@ export interface MorphologyRenderOptions {
 }
 
 export interface CellGlyphRenderOptions {
-	/** Override soma position. Only translation matters for schematic glyphs;
-	 *  arbor lines still run from this point to the layer-centroid targets. */
-	placement?: { cx: number; cy: number };
+	/** Override soma position. Arbor lines still run from this point to the
+	 *  layer-centroid targets; `scale` multiplies the soma radius (and, via
+	 *  it, the arbor stroke width) so schematic cells can be resized without
+	 *  detaching their arbors from the anatomically meaningful endpoints.
+	 *  `rotation` (degrees, clockwise) orients the soma silhouette and the
+	 *  cosmetic dendrite layout — anatomy-tethered arbors are unaffected. */
+	placement?: { cx: number; cy: number; scale?: number; rotation?: number };
 }
 
 /** SWC node type codes → compartment names (1=soma, 2=axon, 3=basal, 4=apical). */
@@ -68,7 +72,9 @@ export function cellClassColor(cellClass: string): string {
 
 /**
  * Draws one stylized cell body with tapered arbors reaching into the layers
- * listed in `fm.dendrite_layers` / `fm.axon_layers`.
+ * listed in `fm.dendrite_layers` / `fm.axon_layers`. Optionally adds cosmetic
+ * primary dendrites with recursive bifurcation and chooses the soma silhouette
+ * per `fm.soma_shape`.
  */
 export function drawCellGlyph(
 	group:     SVGGElement,
@@ -79,9 +85,13 @@ export function drawCellGlyph(
 ): void {
 	const colorVar = cellClassColor(fm.cell_class ?? "other");
 	const rDiag    = Math.sqrt(focus.w * focus.w + focus.h * focus.h);
-	const somaR    = Math.max(rDiag * 0.03, 3);
+	const scale    = opts?.placement?.scale ?? 1;
+	const somaR    = Math.max(rDiag * 0.03, 3) * scale;
 	const cx       = opts?.placement?.cx ?? focus.cx;
 	const cy       = opts?.placement?.cy ?? focus.cy;
+	const rotDeg   = opts?.placement?.rotation ?? 0;
+	const rotRad   = (rotDeg * Math.PI) / 180;
+	const strokeW  = somaR * 0.5;
 
 	const drawArbors = (acronyms: string[] | undefined, kind: "dendrite" | "axon") => {
 		if (!acronyms) return;
@@ -94,7 +104,7 @@ export function drawCellGlyph(
 			line.setAttribute("x2", target.cx.toString());
 			line.setAttribute("y2", target.cy.toString());
 			line.setAttribute("stroke", `var(${colorVar})`);
-			line.setAttribute("stroke-width", (somaR * 0.5).toString());
+			line.setAttribute("stroke-width", strokeW.toString());
 			line.setAttribute("class",
 				kind === "dendrite" ? "neuro-cell-arbor-dendrite" : "neuro-cell-arbor-axon");
 			group.appendChild(line);
@@ -104,13 +114,99 @@ export function drawCellGlyph(
 	drawArbors(fm.dendrite_layers, "dendrite");
 	drawArbors(fm.axon_layers,     "axon");
 
-	const soma = document.createElementNS(SVG_NS, "circle") as SVGCircleElement;
-	soma.setAttribute("cx",    cx.toString());
-	soma.setAttribute("cy",    cy.toString());
-	soma.setAttribute("r",     somaR.toString());
-	soma.setAttribute("fill",  `var(${colorVar})`);
-	soma.setAttribute("class", "neuro-cell-soma");
-	group.appendChild(soma);
+	// ── Cosmetic dendrites ─────────────────────────────────────────────────
+	// Independent of dendrite_layers/axon_layers — they live purely for visual
+	// distinction and are oriented by `rotation`.
+	const dendriteCount = Math.max(0, Math.min(12, Math.round(fm.primary_dendrites ?? 0)));
+	if (dendriteCount > 0) {
+		const spreadDeg   = Math.max(0, Math.min(360, fm.dendrite_spread_deg ?? 360));
+		const spreadRad   = (spreadDeg * Math.PI) / 180;
+		const depthMax    = Math.max(0, Math.min(3, Math.round(fm.branch_depth ?? 0)));
+		const arb         = Math.max(0, Math.min(1, fm.arborization_strength ?? 0.5));
+		const baseLen     = somaR * (3 + 4 * arb);
+		const forkHalfRad = ((15 + 25 * arb) * Math.PI) / 180;
+		// Centre the fan along the cell's "up" (-π/2 in screen coords) rotated
+		// by the placement rotation.
+		const centerTheta = -Math.PI / 2 + rotRad;
+		const startTheta  = centerTheta - spreadRad / 2;
+
+		const emitSeg = (
+			x1: number, y1: number, x2: number, y2: number, width: number,
+		): void => {
+			const seg = document.createElementNS(SVG_NS, "line") as SVGLineElement;
+			seg.setAttribute("x1", x1.toFixed(2));
+			seg.setAttribute("y1", y1.toFixed(2));
+			seg.setAttribute("x2", x2.toFixed(2));
+			seg.setAttribute("y2", y2.toFixed(2));
+			seg.setAttribute("stroke", `var(${colorVar})`);
+			seg.setAttribute("stroke-width", width.toString());
+			seg.setAttribute("stroke-linecap", "round");
+			seg.setAttribute("class", "neuro-cell-dendrite");
+			group.appendChild(seg);
+		};
+
+		// Recursive branch: emit the first half of the segment, then fork
+		// twice from the midpoint with shrinking children until depth hits 0.
+		const drawBranch = (
+			x1: number, y1: number, theta: number, len: number,
+			width: number, depth: number,
+		): void => {
+			const x2 = x1 + Math.cos(theta) * len;
+			const y2 = y1 + Math.sin(theta) * len;
+			if (depth <= 0) {
+				emitSeg(x1, y1, x2, y2, width);
+				return;
+			}
+			const midX = x1 + Math.cos(theta) * (len * 0.5);
+			const midY = y1 + Math.sin(theta) * (len * 0.5);
+			emitSeg(x1, y1, midX, midY, width);
+			const childLen   = len * 0.55 * (1 - 0.15 * arb);
+			const childWidth = Math.max(width * 0.7, strokeW * 0.35);
+			drawBranch(midX, midY, theta - forkHalfRad, childLen, childWidth, depth - 1);
+			drawBranch(midX, midY, theta + forkHalfRad, childLen, childWidth, depth - 1);
+		};
+
+		for (let i = 0; i < dendriteCount; i++) {
+			const theta = dendriteCount === 1
+				? centerTheta
+				: startTheta + (spreadRad * i) / (dendriteCount - 1);
+			drawBranch(cx, cy, theta, baseLen, strokeW, depthMax);
+		}
+	}
+
+	// ── Soma silhouette ────────────────────────────────────────────────────
+	const shape: SomaShape = (fm.soma_shape ?? "circle");
+	if (shape === "triangle") {
+		const apex = -Math.PI / 2 + rotRad;
+		const pts: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const t = apex + (i * 2 * Math.PI) / 3;
+			pts.push(`${(cx + Math.cos(t) * somaR).toFixed(2)},${(cy + Math.sin(t) * somaR).toFixed(2)}`);
+		}
+		const tri = document.createElementNS(SVG_NS, "polygon") as SVGPolygonElement;
+		tri.setAttribute("points", pts.join(" "));
+		tri.setAttribute("fill",   `var(${colorVar})`);
+		tri.setAttribute("class",  "neuro-cell-soma");
+		group.appendChild(tri);
+	} else if (shape === "oval") {
+		const ell = document.createElementNS(SVG_NS, "ellipse") as SVGEllipseElement;
+		ell.setAttribute("cx", cx.toString());
+		ell.setAttribute("cy", cy.toString());
+		ell.setAttribute("rx", (somaR * 0.75).toString());
+		ell.setAttribute("ry", (somaR * 1.2).toString());
+		ell.setAttribute("fill",  `var(${colorVar})`);
+		ell.setAttribute("class", "neuro-cell-soma");
+		ell.setAttribute("transform", `rotate(${rotDeg} ${cx} ${cy})`);
+		group.appendChild(ell);
+	} else {
+		const soma = document.createElementNS(SVG_NS, "circle") as SVGCircleElement;
+		soma.setAttribute("cx",    cx.toString());
+		soma.setAttribute("cy",    cy.toString());
+		soma.setAttribute("r",     somaR.toString());
+		soma.setAttribute("fill",  `var(${colorVar})`);
+		soma.setAttribute("class", "neuro-cell-soma");
+		group.appendChild(soma);
+	}
 }
 
 /**

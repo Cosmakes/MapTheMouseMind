@@ -408,7 +408,7 @@ export class MapTheMindView extends ItemView {
 
 	private mountSearchBar(canvasPanel: HTMLElement): void {
 		this.searchBar = new SearchBar({
-			placeholder: "Search notes (title, themes, body)…",
+			placeholder: "Search notes — terms ANDed; uppercase AND for phrases…",
 			onSearch:    term => void this.runSearch(term),
 		});
 		this.searchBar.render(canvasPanel);

@@ -88,13 +88,19 @@ export class SearchService {
 	/**
 	 * Runs a case-insensitive substring search. Whitespace-separated terms
 	 * are AND-combined — every term must appear somewhere in title/summary/
-	 * themes/body. Returns matches partitioned into direct (current level)
-	 * and deeper (nested below). Out-of-scope hits are silently dropped.
+	 * themes/body. The literal uppercase keyword `AND` (whitespace-bounded)
+	 * splits the query into multi-word phrases instead of single tokens,
+	 * so `CA3 AND mossy fiber` requires both "ca3" and "mossy fiber" to
+	 * appear. Returns matches partitioned into direct (current level) and
+	 * deeper (nested below). Out-of-scope hits are silently dropped.
 	 */
 	async query(term: string, scope: SearchScope): Promise<SearchResults> {
 		const direct: SearchHit[] = [];
 		const deeper: SearchHit[] = [];
-		const needles = term.trim().toLowerCase().split(/\s+/).filter(t => t.length > 0);
+		const raw = term.trim();
+		const needles = /\s+AND\s+/.test(raw)
+			? raw.split(/\s+AND\s+/).map(p => p.trim().toLowerCase()).filter(p => p.length > 0)
+			: raw.toLowerCase().split(/\s+/).filter(t => t.length > 0);
 		if (needles.length === 0) return { direct, deeper };
 
 		for (const file of this.app.vault.getMarkdownFiles()) {

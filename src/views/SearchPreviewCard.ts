@@ -79,24 +79,40 @@ export function renderPreviewCard(
 	return card;
 }
 
-/** Wraps each occurrence of `term` in `<mark>`. Case-insensitive match,
- *  preserves original casing in the rendered text. */
+/** Wraps each occurrence of any query phrase in `<mark>`. The query is split
+ *  the same way the searcher splits it: uppercase whitespace-bounded `AND`
+ *  produces phrases; otherwise per-token highlighting. Case-insensitive
+ *  match, preserves original casing in the rendered text. */
 function appendHighlighted(parent: HTMLElement, text: string, term: string): void {
-	if (!term) { parent.setText(text); return; }
-	const lower  = text.toLowerCase();
-	const needle = term.toLowerCase();
-	if (!needle) { parent.setText(text); return; }
+	const raw = term.trim();
+	if (!raw) { parent.setText(text); return; }
+	const phrases = (/\s+AND\s+/.test(raw)
+		? raw.split(/\s+AND\s+/).map(p => p.trim())
+		: raw.split(/\s+/)
+	).filter(p => p.length > 0).map(p => p.toLowerCase());
+	if (phrases.length === 0) { parent.setText(text); return; }
+
+	const lower = text.toLowerCase();
 	let i = 0;
-	while (i <= text.length) {
-		const j = lower.indexOf(needle, i);
-		if (j < 0) {
-			if (i < text.length) parent.appendChild(document.createTextNode(text.slice(i)));
+	while (i < text.length) {
+		let bestIdx = -1;
+		let bestLen = 0;
+		for (const p of phrases) {
+			const j = lower.indexOf(p, i);
+			if (j < 0) continue;
+			if (bestIdx < 0 || j < bestIdx || (j === bestIdx && p.length > bestLen)) {
+				bestIdx = j;
+				bestLen = p.length;
+			}
+		}
+		if (bestIdx < 0) {
+			parent.appendChild(document.createTextNode(text.slice(i)));
 			return;
 		}
-		if (j > i) parent.appendChild(document.createTextNode(text.slice(i, j)));
+		if (bestIdx > i) parent.appendChild(document.createTextNode(text.slice(i, bestIdx)));
 		const mark = document.createElement("mark");
-		mark.textContent = text.slice(j, j + term.length);
+		mark.textContent = text.slice(bestIdx, bestIdx + bestLen);
 		parent.appendChild(mark);
-		i = j + term.length;
+		i = bestIdx + bestLen;
 	}
 }

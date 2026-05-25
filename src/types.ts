@@ -67,7 +67,27 @@ export interface CellTypeFrontmatter {
 	 *  absent for a given viewpoint, the renderer falls back to layer-centroid
 	 *  + auto-spread placement. */
 	placements?: Record<string, Placement>;
+
+	// ── Schematic shape (ignored when `morphology_source` is set) ────────────
+	/** Silhouette of the soma. Triangle and oval are oriented by placement
+	 *  rotation. Defaults to "circle" — reproduces the pre-customization look. */
+	soma_shape?: SomaShape;
+	/** Count of cosmetic dendrites that radiate from the soma. These are
+	 *  independent of `dendrite_layers`, which still draws lines to layer
+	 *  centroids for anatomical grounding. Default 0. */
+	primary_dendrites?: number;
+	/** Angular spread of the cosmetic dendrites in degrees (0–360), centered
+	 *  on the cell's "up" axis (rotation). Default 360 = full radial. */
+	dendrite_spread_deg?: number;
+	/** Recursive bifurcation depth for each cosmetic dendrite (0–3).
+	 *  0 = straight line, 1 = single fork, etc. Default 0. */
+	branch_depth?: number;
+	/** Fork-angle and taper strength for cosmetic-dendrite branching (0–1).
+	 *  Default 0.5. */
+	arborization_strength?: number;
 }
+
+export type SomaShape = "circle" | "triangle" | "oval";
 
 /** User-controlled placement of a cell within one viewpoint's coordinate space. */
 export interface Placement {
