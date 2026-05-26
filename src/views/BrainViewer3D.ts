@@ -48,6 +48,16 @@ const CARD_EDGE_PAD_PX = 10;
  *  iteration, and the iteration cap (so the loop can never spin forever). */
 const CARD_PUSH_STEP_PX  = 18;
 const CARD_PUSH_MAX_ITER = 40;
+/** Re-run the collision push only when an anchor's dot has moved this far
+ *  from the position where its current card slot was decided. Smaller =
+ *  more responsive layout but more jitter; larger = stickier cards but a
+ *  slightly stale layout during fast rotation. */
+const CARD_RELAYOUT_THRESHOLD_PX = 50;
+/** Per-frame ease factor for the displayed card position toward the target.
+ *  At 60fps, 0.18 reaches ~95% of the target in ~16 frames (~265ms). */
+const CARD_LERP_FACTOR = 0.18;
+/** Below this distance from target, snap to it and stop scheduling frames. */
+const CARD_SNAP_PX = 0.5;
 
 // ── Options ────────────────────────────────────────────────────────────────────
 
@@ -121,6 +131,10 @@ export class BrainViewer3D {
 	private overlayLinesEl:   SVGSVGElement | null = null;
 	private searchTerm:       string = "";
 	private hoverPromotedRank: number | null = null;
+	/** Set whenever something invalidates the card layout (new anchors,
+	 *  visibility change, resize). Cleared by `updateOverlayPositions`
+	 *  after a successful relayout pass. */
+	private overlayLayoutDirty = true;
 
 	constructor(container: HTMLElement, app: App, opts: BrainViewer3DOptions) {
 		this.container = container;
@@ -638,6 +652,7 @@ export class BrainViewer3D {
 		this.camera.aspect = width / height;
 		this.camera.updateProjectionMatrix();
 		this.renderer.setSize(width, height);
+		this.overlayLayoutDirty = true;
 		this.requestRender();
 	}
 
@@ -773,6 +788,9 @@ export class BrainViewer3D {
 				rank:          i,
 				expanded:      isExpanded,
 				dot, card, line: null,
+				displayedCardX: 0, displayedCardY: 0,
+				targetCardX:    null, targetCardY: null,
+				lastLayoutDotX: 0, lastLayoutDotY: 0,
 			};
 			this.searchAnchors.push(anchor);
 
@@ -795,6 +813,7 @@ export class BrainViewer3D {
 			});
 		}
 
+		this.overlayLayoutDirty = true;
 		this.applyAnchorVisibility();
 		this.requestRender();
 	}
@@ -808,6 +827,7 @@ export class BrainViewer3D {
 		this.searchAnchors = [];
 		this.hoverPromotedRank = null;
 		this.searchTerm = "";
+		this.overlayLayoutDirty = true;
 		if (this.overlayCardsEl && this.overlayCardsEl.children.length === 0) {
 			this.overlayCardsEl.remove();
 			this.overlayCardsEl = null;
@@ -964,7 +984,8 @@ export class BrainViewer3D {
 		}
 
 		for (const anchor of this.searchAnchors) {
-			const isExpanded = visible.has(anchor.rank);
+			const wasExpanded = anchor.expanded;
+			const isExpanded  = visible.has(anchor.rank);
 			anchor.expanded = isExpanded;
 			anchor.card.toggleClass("is-visible", isExpanded);
 			anchor.dot.toggleClass("is-promoted", anchor.rank === this.hoverPromotedRank);
@@ -978,7 +999,17 @@ export class BrainViewer3D {
 				anchor.line.remove();
 				anchor.line = null;
 			}
+
+			// Collapsed → forget the stale layout so a future re-expansion snaps
+			// to a freshly-computed slot rather than lerping from the old one.
+			if (wasExpanded && !isExpanded) {
+				anchor.targetCardX = null;
+				anchor.targetCardY = null;
+				anchor.displayedCardX = 0;
+				anchor.displayedCardY = 0;
+			}
 		}
+		this.overlayLayoutDirty = true;
 		this.updateOverlayPositions();
 		this.requestRender();
 	}
@@ -1004,128 +1035,183 @@ export class BrainViewer3D {
 		const cx = w / 2;
 		const cy = h / 2;
 
-		// First pass: project each anchor, position its dot, and record its
-		// natural outward angle (away from canvas centre).
-		interface Placement {
+		// ── Pass 1: project every anchor's dot to the screen every frame ──
+		// The dot must stay pixel-accurate against the rotating mesh, so this
+		// runs unconditionally. We also record `baseAngle` (outward from canvas
+		// centre) which the collision pass uses as its starting search angle.
+		interface FrameData {
 			anchor:    Search3DAnchor;
 			dotX:      number; dotY: number;
 			baseAngle: number;
-			cardX:     number; cardY: number;
 			halfW:     number; halfH: number;
 		}
-		// Obstacles: in-canvas UI overlays the cards must avoid (the layer
-		// panel is the main one). Coordinates are in canvas-local pixels.
-		const obstacles: Array<{ x: number; y: number; halfW: number; halfH: number }> = [];
-		if (this.layerPanel) {
-			const r = this.layerPanel.getBoundingClientRect();
-			if (r.width > 0 && r.height > 0) {
-				obstacles.push({
-					x:     (r.left + r.right) / 2 - rect.left,
-					y:     (r.top  + r.bottom) / 2 - rect.top,
-					halfW: r.width  / 2,
-					halfH: r.height / 2,
-				});
-			}
-		}
-
-		const placements: Placement[] = [];
+		const frame: FrameData[] = [];
 		for (const a of this.searchAnchors) {
-			// Raycast from the camera through the anatomical anchor (mesh
-			// bbox centre, slice-axis snapped). The first front-facing hit
-			// projects to the same screen pixel as the anchor itself but
-			// guarantees we're picking a point on the mesh — useful for
-			// concave structures where the bbox centre sits in a gap.
 			const v = this.projectAnchorToCanvas(a);
 			const sx = (v.x * 0.5 + 0.5) * w;
 			const sy = (1 - (v.y * 0.5 + 0.5)) * h;
 			a.dot.style.left = `${offsetX + sx}px`;
 			a.dot.style.top  = `${offsetY + sy}px`;
-
-			const baseAngle = Math.atan2(sy - cy, sx - cx);
-
-			placements.push({
-				anchor: a,
-				dotX: sx, dotY: sy,
-				baseAngle,
-				cardX: sx + Math.cos(baseAngle) * CARD_OUTWARD_OFFSET_PX,
-				cardY: sy + Math.sin(baseAngle) * CARD_OUTWARD_OFFSET_PX,
-				halfW: a.card.offsetWidth  / 2,
-				halfH: a.card.offsetHeight / 2,
+			frame.push({
+				anchor:    a,
+				dotX:      sx, dotY: sy,
+				baseAngle: Math.atan2(sy - cy, sx - cx),
+				halfW:     a.card.offsetWidth  / 2,
+				halfH:     a.card.offsetHeight / 2,
 			});
 		}
 
-		// Second pass: place each visible card. Search over (angle deviation,
-		// distance) starting from the natural angle and the mandatory minimum
-		// distance — pick the closest fit that stays inside the canvas and
-		// doesn't overlap a previously placed card. Distance never drops below
-		// CARD_OUTWARD_OFFSET_PX, so the dot→card gap is preserved.
-		const expanded = placements.filter(p => p.anchor.expanded);
-		expanded.sort((a, b) => a.anchor.rank - b.anchor.rank);
-		const placed: Placement[] = [];
-		const angleDeltas: number[] = [0];
-		for (let s = 1; s <= 12; s++) {
-			const rad = (s * 15) * Math.PI / 180;
-			angleDeltas.push(rad);
-			angleDeltas.push(-rad);
-		}
-		for (const p of expanded) {
-			let placedOk = false;
-			outer: for (let push = 0; push < CARD_PUSH_MAX_ITER; push++) {
-				const distance = CARD_OUTWARD_OFFSET_PX + push * CARD_PUSH_STEP_PX;
-				for (const delta of angleDeltas) {
-					const a = p.baseAngle + delta;
-					const cx2 = p.dotX + Math.cos(a) * distance;
-					const cy2 = p.dotY + Math.sin(a) * distance;
-					if (cx2 - p.halfW - CARD_EDGE_PAD_PX < 0) continue;
-					if (cx2 + p.halfW + CARD_EDGE_PAD_PX > w) continue;
-					if (cy2 - p.halfH - CARD_EDGE_PAD_PX < 0) continue;
-					if (cy2 + p.halfH + CARD_EDGE_PAD_PX > h) continue;
-					let collided = false;
-					for (const q of placed) {
-						if (
-							Math.abs(cx2 - q.cardX) < p.halfW + q.halfW + CARD_OVERLAP_PAD_PX &&
-							Math.abs(cy2 - q.cardY) < p.halfH + q.halfH + CARD_OVERLAP_PAD_PX
-						) { collided = true; break; }
-					}
-					if (collided) continue;
-					for (const o of obstacles) {
-						if (
-							Math.abs(cx2 - o.x) < p.halfW + o.halfW + CARD_OVERLAP_PAD_PX &&
-							Math.abs(cy2 - o.y) < p.halfH + o.halfH + CARD_OVERLAP_PAD_PX
-						) { collided = true; break; }
-					}
-					if (collided) continue;
-					p.cardX = cx2;
-					p.cardY = cy2;
-					placedOk = true;
-					break outer;
+		// ── Hysteresis: decide whether to re-run the (expensive) collision push.
+		// We re-layout when an external invalidation flagged it dirty, OR when
+		// any anchor still has no target, OR when any dot has drifted past the
+		// threshold from where its current target was computed. Otherwise the
+		// targets from the previous layout remain valid and the cards stay put.
+		let relayout = this.overlayLayoutDirty;
+		if (!relayout) {
+			for (const f of frame) {
+				if (f.anchor.targetCardX === null || f.anchor.targetCardY === null) {
+					relayout = true; break;
+				}
+				const dx = f.dotX - f.anchor.lastLayoutDotX;
+				const dy = f.dotY - f.anchor.lastLayoutDotY;
+				if (Math.hypot(dx, dy) > CARD_RELAYOUT_THRESHOLD_PX) {
+					relayout = true; break;
 				}
 			}
-			if (!placedOk) {
-				// Fallback only when no on-canvas / non-overlapping pose exists
-				// (very small viewport). Clamp to keep the card visible.
-				const minX = p.halfW + CARD_EDGE_PAD_PX;
-				const maxX = w - p.halfW - CARD_EDGE_PAD_PX;
-				const minY = p.halfH + CARD_EDGE_PAD_PX;
-				const maxY = h - p.halfH - CARD_EDGE_PAD_PX;
-				if (maxX > minX) p.cardX = Math.min(Math.max(p.cardX, minX), maxX);
-				if (maxY > minY) p.cardY = Math.min(Math.max(p.cardY, minY), maxY);
-			}
-			placed.push(p);
 		}
 
-		// Third pass: write final positions for all placements (including
-		// non-expanded anchors, which still have a default cardX/cardY).
-		for (const p of placements) {
-			p.anchor.card.style.left = `${offsetX + p.cardX}px`;
-			p.anchor.card.style.top  = `${offsetY + p.cardY}px`;
-			if (p.anchor.line) {
-				p.anchor.line.setAttribute("x1", String(offsetX + p.dotX));
-				p.anchor.line.setAttribute("y1", String(offsetY + p.dotY));
-				p.anchor.line.setAttribute("x2", String(offsetX + p.cardX));
-				p.anchor.line.setAttribute("y2", String(offsetY + p.cardY));
+		// ── Pass 2: collision push (conditional). Same algorithm as before,
+		// but the output is written to `anchor.targetCardX/Y` and the dot
+		// position at which the slot was decided is captured for the next
+		// hysteresis check.
+		if (relayout) {
+			// Obstacles: in-canvas UI overlays the cards must avoid (the layer
+			// panel is the main one). Coordinates are in canvas-local pixels.
+			const obstacles: Array<{ x: number; y: number; halfW: number; halfH: number }> = [];
+			if (this.layerPanel) {
+				const r = this.layerPanel.getBoundingClientRect();
+				if (r.width > 0 && r.height > 0) {
+					obstacles.push({
+						x:     (r.left + r.right) / 2 - rect.left,
+						y:     (r.top  + r.bottom) / 2 - rect.top,
+						halfW: r.width  / 2,
+						halfH: r.height / 2,
+					});
+				}
+			}
+
+			interface SlotCandidate {
+				frame: FrameData;
+				cardX: number; cardY: number;
+			}
+			const expanded = frame.filter(f => f.anchor.expanded);
+			expanded.sort((a, b) => a.anchor.rank - b.anchor.rank);
+			const placed: SlotCandidate[] = [];
+			const angleDeltas: number[] = [0];
+			for (let s = 1; s <= 12; s++) {
+				const rad = (s * 15) * Math.PI / 180;
+				angleDeltas.push(rad);
+				angleDeltas.push(-rad);
+			}
+			for (const f of expanded) {
+				let cardX = f.dotX + Math.cos(f.baseAngle) * CARD_OUTWARD_OFFSET_PX;
+				let cardY = f.dotY + Math.sin(f.baseAngle) * CARD_OUTWARD_OFFSET_PX;
+				let placedOk = false;
+				outer: for (let push = 0; push < CARD_PUSH_MAX_ITER; push++) {
+					const distance = CARD_OUTWARD_OFFSET_PX + push * CARD_PUSH_STEP_PX;
+					for (const delta of angleDeltas) {
+						const ang = f.baseAngle + delta;
+						const cx2 = f.dotX + Math.cos(ang) * distance;
+						const cy2 = f.dotY + Math.sin(ang) * distance;
+						if (cx2 - f.halfW - CARD_EDGE_PAD_PX < 0) continue;
+						if (cx2 + f.halfW + CARD_EDGE_PAD_PX > w) continue;
+						if (cy2 - f.halfH - CARD_EDGE_PAD_PX < 0) continue;
+						if (cy2 + f.halfH + CARD_EDGE_PAD_PX > h) continue;
+						let collided = false;
+						for (const q of placed) {
+							if (
+								Math.abs(cx2 - q.cardX) < f.halfW + q.frame.halfW + CARD_OVERLAP_PAD_PX &&
+								Math.abs(cy2 - q.cardY) < f.halfH + q.frame.halfH + CARD_OVERLAP_PAD_PX
+							) { collided = true; break; }
+						}
+						if (collided) continue;
+						for (const o of obstacles) {
+							if (
+								Math.abs(cx2 - o.x) < f.halfW + o.halfW + CARD_OVERLAP_PAD_PX &&
+								Math.abs(cy2 - o.y) < f.halfH + o.halfH + CARD_OVERLAP_PAD_PX
+							) { collided = true; break; }
+						}
+						if (collided) continue;
+						cardX = cx2;
+						cardY = cy2;
+						placedOk = true;
+						break outer;
+					}
+				}
+				if (!placedOk) {
+					// Fallback clamp for the rare case the viewport is too small
+					// to fit a non-overlapping slot anywhere.
+					const minX = f.halfW + CARD_EDGE_PAD_PX;
+					const maxX = w - f.halfW - CARD_EDGE_PAD_PX;
+					const minY = f.halfH + CARD_EDGE_PAD_PX;
+					const maxY = h - f.halfH - CARD_EDGE_PAD_PX;
+					if (maxX > minX) cardX = Math.min(Math.max(cardX, minX), maxX);
+					if (maxY > minY) cardY = Math.min(Math.max(cardY, minY), maxY);
+				}
+				placed.push({ frame: f, cardX, cardY });
+				f.anchor.targetCardX = cardX;
+				f.anchor.targetCardY = cardY;
+				f.anchor.lastLayoutDotX = f.dotX;
+				f.anchor.lastLayoutDotY = f.dotY;
+			}
+			// Non-expanded anchors don't go through the collision pass, but
+			// they still need a target so the lerp loop has something to write.
+			for (const f of frame) {
+				if (f.anchor.expanded) continue;
+				f.anchor.targetCardX = f.dotX + Math.cos(f.baseAngle) * CARD_OUTWARD_OFFSET_PX;
+				f.anchor.targetCardY = f.dotY + Math.sin(f.baseAngle) * CARD_OUTWARD_OFFSET_PX;
+				f.anchor.lastLayoutDotX = f.dotX;
+				f.anchor.lastLayoutDotY = f.dotY;
+			}
+			this.overlayLayoutDirty = false;
+		}
+
+		// ── Pass 3: lerp displayed positions toward targets and write to DOM.
+		// Cards that just received their first target snap straight there;
+		// thereafter each frame eases by CARD_LERP_FACTOR toward the target.
+		let stillEasing = false;
+		for (const f of frame) {
+			const a = f.anchor;
+			if (a.targetCardX === null || a.targetCardY === null) continue;
+			if (a.displayedCardX === 0 && a.displayedCardY === 0) {
+				a.displayedCardX = a.targetCardX;
+				a.displayedCardY = a.targetCardY;
+			} else {
+				const dx = a.targetCardX - a.displayedCardX;
+				const dy = a.targetCardY - a.displayedCardY;
+				if (Math.abs(dx) < CARD_SNAP_PX && Math.abs(dy) < CARD_SNAP_PX) {
+					a.displayedCardX = a.targetCardX;
+					a.displayedCardY = a.targetCardY;
+				} else {
+					a.displayedCardX += dx * CARD_LERP_FACTOR;
+					a.displayedCardY += dy * CARD_LERP_FACTOR;
+					stillEasing = true;
+				}
+			}
+			a.card.style.left = `${offsetX + a.displayedCardX}px`;
+			a.card.style.top  = `${offsetY + a.displayedCardY}px`;
+			if (a.line) {
+				a.line.setAttribute("x1", String(offsetX + f.dotX));
+				a.line.setAttribute("y1", String(offsetY + f.dotY));
+				a.line.setAttribute("x2", String(offsetX + a.displayedCardX));
+				a.line.setAttribute("y2", String(offsetY + a.displayedCardY));
 			}
 		}
+
+		// Keep the render loop alive while the lerp finishes — without this,
+		// rAF would idle as soon as the camera stops moving and cards would
+		// freeze mid-transition.
+		if (stillEasing) this.requestRender();
 	}
 
 	// ── Disposal ───────────────────────────────────────────────────────────────────
@@ -1175,4 +1261,16 @@ interface Search3DAnchor {
 	dot:           HTMLDivElement;
 	card:          HTMLDivElement;
 	line:          SVGLineElement | null;
+	/** Current displayed card position (overlay-local px). Lerped per frame
+	 *  toward `targetCardX/Y` for smooth motion. */
+	displayedCardX: number;
+	displayedCardY: number;
+	/** Target card position from the most recent collision-push layout, or
+	 *  null when no layout has run yet (first frame snaps to target). */
+	targetCardX: number | null;
+	targetCardY: number | null;
+	/** Dot screen position at the time targetCard*X/Y were computed —
+	 *  feeds the hysteresis check that decides whether to re-layout. */
+	lastLayoutDotX: number;
+	lastLayoutDotY: number;
 }
