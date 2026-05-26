@@ -16,12 +16,19 @@ export interface NeuroMindmapSettings {
 	 * every visit so the user sees the brain at the angle they left it.
 	 */
 	brain3DCamera: { theta: number; phi: number; radius: number } | null;
+	/** When true, dragging on the 3D canvas rotates the camera (default on). */
+	brain3DDragToRotate: boolean;
+	/** When true, a single click on a region mesh opens that region's viewpoint
+	 *  (default off — prevents accidental drilling-in while rotating). */
+	brain3DClickToOpen: boolean;
 }
 
 export const DEFAULT_SETTINGS: NeuroMindmapSettings = {
 	defaultFolder:          "neuro",
 	lastViewpointByAllenId: {},
 	brain3DCamera:          null,
+	brain3DDragToRotate:    true,
+	brain3DClickToOpen:     false,
 };
 
 export class NeuroSettingsTab extends PluginSettingTab {
@@ -54,6 +61,30 @@ export class NeuroSettingsTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.defaultFolder)
 					.onChange(async value => {
 						this.plugin.settings.defaultFolder = value.trim() || "neuro";
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("3D view: drag to rotate")
+			.setDesc("Drag on the 3D brain canvas to rotate the camera. The ↑↓←→ buttons still work either way.")
+			.addToggle(toggle =>
+				toggle
+					.setValue(this.plugin.settings.brain3DDragToRotate)
+					.onChange(async value => {
+						this.plugin.settings.brain3DDragToRotate = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("3D view: click to open region")
+			.setDesc("Clicking a region in the 3D brain opens its viewpoint. Disabled by default to avoid accidental navigation while rotating.")
+			.addToggle(toggle =>
+				toggle
+					.setValue(this.plugin.settings.brain3DClickToOpen)
+					.onChange(async value => {
+						this.plugin.settings.brain3DClickToOpen = value;
 						await this.plugin.saveSettings();
 					})
 			);

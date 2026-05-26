@@ -117,6 +117,7 @@ export class HelpModal extends Modal {
 		const nav = el.createEl("ul");
 		nav.createEl("li", { text: "Click any region with a brain-region note → opens its viewpoint (or the picker, if you haven't created one yet)." });
 		nav.createEl("li", { text: "Hover any mesh → tooltip with name + acronym." });
+		nav.createEl("li", { text: "Drag the canvas to rotate the camera (default on). Click-to-open is default off so accidental drags don't drill in. Both modes are independent toggles in plugin settings — turn click-to-open on if you prefer one-click navigation." });
 
 		el.createEl("h3", { text: "Camera controls (top-right)" });
 		const cam = el.createEl("ul");

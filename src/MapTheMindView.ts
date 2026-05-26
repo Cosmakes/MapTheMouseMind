@@ -734,6 +734,10 @@ export class MapTheMindView extends ItemView {
 				this.plugin.settings.brain3DCamera = camera;
 				void this.plugin.saveSettings();
 			},
+			getInteractionModes: () => ({
+				dragToRotate: this.plugin.settings.brain3DDragToRotate,
+				clickToOpen:  this.plugin.settings.brain3DClickToOpen,
+			}),
 			onRegionClick: (allenId: number) => {
 				const node = this.structureTree.get(allenId);
 				this.navStack.push({

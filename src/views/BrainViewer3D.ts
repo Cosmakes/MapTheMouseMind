@@ -73,6 +73,11 @@ export interface BrainViewer3DOptions {
 	/** Fired (debounced) whenever the user changes the camera so the host
 	 *  can persist it. */
 	onCameraChange?: (camera: { theta: number; phi: number; radius: number }) => void;
+	/** Live read of the user's interaction-mode toggles. The viewer calls this
+	 *  on every input event, so changes in plugin settings take effect
+	 *  immediately without remounting the view. If omitted, defaults to
+	 *  drag-to-rotate enabled and click-to-open disabled. */
+	getInteractionModes?: () => { dragToRotate: boolean; clickToOpen: boolean };
 }
 
 // ── Viewer ────────────────────────────────────────────────────────────────────
@@ -517,9 +522,11 @@ export class BrainViewer3D {
 	private attachInputListeners(): void {
 		const canvas = this.renderer.domElement;
 
-		canvas.addEventListener("mousemove", (e: MouseEvent) => {
+		// Hover highlight — runs on every pointer move including during a drag.
+		canvas.addEventListener("pointermove", (e: PointerEvent) => {
 			this.updatePointer(e);
 			this.handleHover();
+			this.handleDragRotate(e);
 		});
 
 		canvas.addEventListener("mouseleave", () => {
@@ -530,11 +537,63 @@ export class BrainViewer3D {
 			}
 		});
 
-		canvas.addEventListener("click", () => {
-			if (this.hoveredId !== null && this.opts.onRegionClick) {
+		// Drag-to-rotate + click-to-open with a 4px move threshold so a tiny
+		// twitch during a click doesn't get classified as a drag (and so a
+		// long drag doesn't fire a stray click on release).
+		canvas.addEventListener("pointerdown", (e: PointerEvent) => {
+			if (e.button !== 0) return;
+			this.drag.active = true;
+			this.drag.moved  = false;
+			this.drag.downX  = this.drag.lastX = e.clientX;
+			this.drag.downY  = this.drag.lastY = e.clientY;
+			canvas.setPointerCapture(e.pointerId);
+		});
+
+		const endDrag = (e: PointerEvent): void => {
+			if (!this.drag.active) return;
+			const wasMoved = this.drag.moved;
+			this.drag.active = false;
+			this.drag.moved  = false;
+			canvas.releasePointerCapture?.(e.pointerId);
+
+			const modes = this.opts.getInteractionModes?.()
+				?? { dragToRotate: true, clickToOpen: false };
+			if (!wasMoved && modes.clickToOpen
+				&& this.hoveredId !== null && this.opts.onRegionClick) {
 				this.opts.onRegionClick(this.hoveredId);
 			}
-		});
+		};
+		canvas.addEventListener("pointerup", endDrag);
+		canvas.addEventListener("pointercancel", endDrag);
+	}
+
+	private drag = {
+		active: false,
+		moved:  false,
+		downX:  0, downY: 0,
+		lastX:  0, lastY: 0,
+	};
+
+	private handleDragRotate(e: PointerEvent): void {
+		if (!this.drag.active) return;
+		const DRAG_THRESHOLD_PX    = 4;
+		const DRAG_ROT_SENSITIVITY = 0.005;  // rad / px — ~57° per 200px swipe
+
+		if (!this.drag.moved && Math.hypot(
+			e.clientX - this.drag.downX, e.clientY - this.drag.downY,
+		) > DRAG_THRESHOLD_PX) {
+			this.drag.moved = true;
+		}
+		const modes = this.opts.getInteractionModes?.()
+			?? { dragToRotate: true, clickToOpen: false };
+		if (!this.drag.moved || !modes.dragToRotate) return;
+
+		const dx = e.clientX - this.drag.lastX;
+		const dy = e.clientY - this.drag.lastY;
+		if (dx !== 0) this.rotateHorizontal(-dx * DRAG_ROT_SENSITIVITY);
+		if (dy !== 0) this.rotateVertical( -dy * DRAG_ROT_SENSITIVITY);
+		this.drag.lastX = e.clientX;
+		this.drag.lastY = e.clientY;
 	}
 
 	private updatePointer(e: MouseEvent): void {
