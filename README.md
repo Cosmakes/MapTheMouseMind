@@ -1,7 +1,7 @@
-# MapTheMind (Mouse)
+# MapTheMind
 
 The Obsidian plugin for neuroscientists working on the mouse brain.
-Neuro Mindmap turns your vault into a visual note-taking tool anchored
+MapTheMind turns your vault into a visual note-taking tool anchored
 to the Allen Mouse Brain Atlas (CCFv3): browse the whole brain in 3D,
 drill into Allen reference sections, and attach markdown notes to any
 region, viewpoint, or cell.
@@ -26,7 +26,7 @@ region, viewpoint, or cell.
 ## Getting started
 
 1. Open **Settings → Community plugins → Browse**, search for
-   *Neuro Mindmap (Mouse)*, and click **Install**, then **Enable**.
+   *MapTheMind*, and click **Install**, then **Enable**.
 2. Click the brain icon in the ribbon (or run the command
    *Open MapTheMind view*) to open the plugin pane.
 3. The 3D whole-brain view loads on first open. Click a region to
